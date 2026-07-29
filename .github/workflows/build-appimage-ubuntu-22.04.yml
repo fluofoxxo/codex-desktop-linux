@@ -1,0 +1,86 @@
+name: Build AppImage (Ubuntu 22.04)
+
+on:
+  # Build an artifact for every pushed revision, including branches used to
+  # investigate upstream DMG or Ubuntu 22.04 compatibility drift.
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-appimage:
+    name: Build AppImage
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y p7zip-full make g++ python3 curl unzip
+
+      - name: Download appimagetool
+        id: appimagetool
+        env:
+          APPIMAGETOOL_URL: https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+        run: |
+          set -euo pipefail
+          tool_path="$RUNNER_TEMP/appimagetool"
+          curl --fail --location --retry 3 --output "$tool_path" "$APPIMAGETOOL_URL"
+          chmod 0755 "$tool_path"
+          printf 'path=%s\n' "$tool_path" >> "$GITHUB_OUTPUT"
+
+      - name: Build app from the current upstream DMG
+        run: make build-app
+
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          APPIMAGETOOL: ${{ steps.appimagetool.outputs.path }}
+          PACKAGE_VERSION: 2026.07.28.${{ github.run_number }}+ci
+        run: make appimage
+
+      - name: Verify AppImage output
+        run: |
+          set -euo pipefail
+          appimage="$(find dist -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          test -s "$appimage"
+          file "$appimage"
+          sha256sum "$appimage"
+          {
+            echo '## AppImage build'
+            echo
+            echo "- Runner: \`ubuntu-22.04\`"
+            echo "- Artifact: \`$(basename "$appimage")\`"
+            echo "- SHA-256: \`$(sha256sum "$appimage" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload AppImage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-desktop-appimage-ubuntu-22.04-${{ github.run_number }}
+          path: dist/*.AppImage
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-desktop-appimage-diagnostics-${{ github.run_number }}
+          path: |
+            codex-app/.codex-linux/*.json
+            dist/**/*.AppImage
+          if-no-files-found: ignore
+          retention-days: 14
